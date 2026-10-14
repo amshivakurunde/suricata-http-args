@@ -171,6 +171,7 @@
 #include "detect-http-headers.h"
 #include "detect-http-raw-header.h"
 #include "detect-http-uri.h"
+#include "detect-http-args.h"
 #include "detect-http-protocol.h"
 #include "detect-http-start.h"
 #include "detect-http-stat-msg.h"
@@ -544,6 +545,7 @@ void SigTableSetup(void)
      * of inspect engines in the rule. Which in turn affects
      * state keeping */
     DetectHttpUriRegister();
+    DetectHttpArgsRegister();
     DetectHttpRequestLineRegister();
     DetectHttpClientBodyRegister();
     DetectHttpResponseLineRegister();

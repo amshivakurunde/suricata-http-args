@@ -25,3 +25,16 @@ pub unsafe extern "C" fn htp_uri_path(uri: *const Uri) -> *const Bstr {
         .map(|path| path as *const Bstr)
         .unwrap_or(std::ptr::null())
 }
+/// Get the query string of a uri.
+///
+/// Returns the query string for uri or NULL on error.
+/// # Safety
+/// When calling this method, you have to ensure that uri is either properly initialized or NULL
+#[no_mangle]
+pub unsafe extern "C" fn htp_uri_query(uri: *const Uri) -> *const Bstr {
+    uri.as_ref()
+        .and_then(|uri| uri.query.as_ref())
+        .map(|query| query as *const Bstr)
+        .unwrap_or(std::ptr::null())
+}
+

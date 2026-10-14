@@ -216,6 +216,7 @@ noinst_HEADERS = \
 	detect-http-stat-msg.h \
 	detect-http-ua.h \
 	detect-http-uri.h \
+        detect-http-args.h \
 	detect-http2.h \
 	detect-icmp-id.h \
 	detect-icmp-seq.h \
@@ -818,6 +819,7 @@ libsuricata_c_a_SOURCES = \
 	detect-http-stat-msg.c \
 	detect-http-ua.c \
 	detect-http-uri.c \
+        detect-http-args.c \
 	detect-http2.c \
 	detect-icmp-id.c \
 	detect-icmp-seq.c \
