@@ -7,6 +7,7 @@
 #include "detect-engine.h"
 #include "detect-engine-buffer.h"
 #include "detect-engine-inspect-buffer.h"
+#include "detect-engine-content-inspection.h"
 #include "detect-engine-mpm.h"
 #include "detect-engine-prefilter.h"
 
@@ -17,10 +18,22 @@
 #include "util-streaming-buffer.h"
 
 #include "app-layer.h"
+#include "app-layer-parser.h"
 #include "app-layer-htp.h"
 
 #include "detect-http-args.h"
 #include "stream-tcp.h"
+
+static uint8_t DetectEngineInspectBufferHttpArgs(
+        DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine,
+        const Signature *s,
+        Flow *f,
+        uint8_t flags,
+        void *alstate,
+        void *txv,
+        uint64_t tx_id);
 
 
 static int g_http_args_buffer_id = 0;
@@ -141,22 +154,22 @@ void DetectHttpArgsRegister(void)
      * contain request-body parameters.
      */
     DetectAppLayerInspectEngineRegister(
-            "http_args",
-            ALPROTO_HTTP1,
-            SIG_FLAG_TOSERVER,
-            HTP_REQUEST_PROGRESS_BODY,
-            DetectEngineInspectBufferGeneric,
-            GetData);
+        "http_args",
+        ALPROTO_HTTP1,
+        SIG_FLAG_TOSERVER,
+        HTP_REQUEST_PROGRESS_BODY,
+        DetectEngineInspectBufferHttpArgs,
+        NULL);
 
 
-    DetectAppLayerMpmRegister(
+   /* DetectAppLayerMpmRegister(
             "http_args",
             SIG_FLAG_TOSERVER,
             2,
             PrefilterGenericMpmRegister,
             GetData,
             ALPROTO_HTTP1,
-            HTP_REQUEST_PROGRESS_BODY);
+            HTP_REQUEST_PROGRESS_BODY); */
 
 
     DetectBufferTypeSetDescriptionByName(
@@ -260,9 +273,7 @@ static InspectionBuffer *GetData(
     InspectionBuffer *buffer =
             InspectionBufferGet(det_ctx, list_id);
 
-    if (buffer->initialized) {
-        return buffer;
-    }
+    
 
     htp_tx_t *tx = (htp_tx_t *)txv;
 
@@ -327,14 +338,18 @@ if (query_size > 0) {
             uint64_t body_offset = 0;
 
             if (StreamingBufferGetData(
-                        htud->request_body.sb,
-                        &body_data,
-                        &body_len,
-                        &body_offset) != 1) {
+            htud->request_body.sb,
+            &body_data,
+            &body_len,
+            &body_offset) != 1) {
 
-                body_data = NULL;
-                body_len = 0;
-            }
+    body_data = NULL;
+    body_len = 0;
+
+    
+} else {
+   
+}
 
             /*
              * If offset is not zero, the start of the
@@ -454,4 +469,133 @@ if (query_size > 0) {
 
 
     return buffer;
+}
+
+static uint8_t DetectEngineInspectBufferHttpArgs(
+        DetectEngineCtx *de_ctx,
+        DetectEngineThreadCtx *det_ctx,
+        const DetectEngineAppInspectionEngine *engine,
+        const Signature *s,
+        Flow *f,
+        uint8_t flags,
+        void *alstate,
+        void *txv,
+        uint64_t tx_id)
+{
+    (void)alstate;
+    (void)tx_id;
+
+    /*
+     * HTTP body data may arrive over multiple TCP segments
+     * or HTTP chunks.
+     *
+     * Do not consider the signature permanently finished
+     * until HTP has progressed beyond the BODY stage.
+     */
+ 
+ const int progress =
+        AppLayerParserGetStateProgress(
+                f->proto,
+                f->alproto,
+                txv,
+                flags);
+
+
+
+const bool eof =
+        progress > HTP_REQUEST_PROGRESS_BODY;
+
+    /*
+     * If MPM is not being used, transformations must be
+     * applied here through GetData().
+     */
+    const DetectEngineTransforms *transforms = NULL;
+
+    if (!engine->mpm) {
+        transforms = engine->v2.transforms;
+    }
+
+    /*
+     * Call our http.args GetData() directly.
+     *
+     * Do NOT use engine->v2.GetData here because Suricata
+     * only stores that pointer automatically for the
+     * generic inspection callback.
+     */
+    const InspectionBuffer *buffer =
+            GetData(
+                    det_ctx,
+                    transforms,
+                    f,
+                    flags,
+                    txv,
+                    engine->sm_list);
+
+    if (buffer == NULL || buffer->inspect == NULL) {
+
+        if (eof && engine->match_on_null) {
+            return DETECT_ENGINE_INSPECT_SIG_MATCH;
+        }
+
+        return eof
+                ? DETECT_ENGINE_INSPECT_SIG_CANT_MATCH
+                : DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
+    }
+
+    const uint32_t data_len =
+            buffer->inspect_len;
+
+    const uint8_t *data =
+            buffer->inspect;
+
+    const uint64_t offset =
+            buffer->inspect_offset;
+
+    uint8_t ci_flags =
+            eof ? DETECT_CI_FLAGS_END : 0;
+
+    ci_flags |=
+            (offset == 0 ? DETECT_CI_FLAGS_START : 0);
+
+    ci_flags |= buffer->flags;
+
+    const bool match =
+            DetectEngineContentInspection(
+                    de_ctx,
+                    det_ctx,
+                    s,
+                    engine->smd,
+                    NULL,
+                    f,
+                    data,
+                    data_len,
+                    offset,
+                    ci_flags,
+                    DETECT_ENGINE_CONTENT_INSPECTION_MODE_STATE);
+
+    if (match) {
+        return DETECT_ENGINE_INSPECT_SIG_MATCH;
+    }
+
+    /*
+     * Critical streaming behavior:
+     *
+     * BODY still active:
+     *     NO_MATCH
+     *     -> try this signature again when more body arrives.
+     *
+     * BODY finished:
+     *     CANT_MATCH
+     *     -> no more request-body data can help.
+     */
+    if (AppLayerParserGetStateProgress(
+                IPPROTO_TCP,
+                ALPROTO_HTTP1,
+                txv,
+                flags) > HTP_REQUEST_PROGRESS_BODY) {
+
+        return DETECT_ENGINE_INSPECT_SIG_CANT_MATCH;
+    }
+
+    return DETECT_ENGINE_INSPECT_SIG_NO_MATCH;
 }
