@@ -1,0 +1,10 @@
+.git
+rust/target
+target
+src/.deps
+src/*.o
+src/suricata
+autom4te.cache
+*.pcap
+*.pcapng
+suricata-output
